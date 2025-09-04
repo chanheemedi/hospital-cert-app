@@ -32,10 +32,9 @@ def split_tags(s: str):
 
 st.set_page_config(page_title="Hospital Accreditation Hub", layout="wide")
 st.title("Hospital Accreditation Hub")
-st.markdown(
-    "[?? Open this app (public URL)](https://hospital-cert-app-enwsxvnq6npmufwy3ysccf.streamlit.app/)",
-    help="Share this link with your team"
-)
+PUBLIC_URL = "https://hospital-cert-app-enwsxvnq6npmufwy3ysccf.streamlit.app/"
+st.link_button("Open this app (public URL)", PUBLIC_URL, type="secondary")
+
 st.caption("Google Sheets + Google Drive + Streamlit")
 
 cfg = st.secrets.get("app", {})
