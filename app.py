@@ -1,6 +1,6 @@
+# -*- coding: utf-8 -*-
 import streamlit as st, pandas as pd, gspread
 from google.oauth2.service_account import Credentials
-from datetime import datetime
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -34,7 +34,12 @@ st.set_page_config(page_title="Hospital Accreditation Hub", layout="wide")
 st.title("Hospital Accreditation Hub")
 st.caption("Google Sheets + Google Drive + Streamlit")
 
-SHEET_NAME = st.secrets["app"]["sheet_name"]
+cfg = st.secrets.get("app", {})
+SHEET_NAME = cfg.get("sheet_name")
+if not SHEET_NAME:
+    st.error("Missing [app].sheet_name in Secrets.")
+    st.stop()
+
 try:
     df = load_df(SHEET_NAME)
 except Exception as e:
@@ -83,11 +88,11 @@ else:
             title = row.get("title", "(no title)")
             cat = row.get("category", "-")
             owner = row.get("owner", "-")
-            tags = " / ".join(split_tags(row.get("tags","")))
+            tags = " / ".join(split_tags(row.get("tags",""))) or "-"
             upd = row.get("updated_at")
-            upd_str = upd.strftime("%Y-%m-%d") if isinstance(upd, pd.Timestamp) else str(upd or "-")
+            upd_str = upd.strftime("%Y-%m-%d") if isinstance(upd, pd.Timestamp) else "-"
             st.markdown(f"### {title}")
-            st.write(f"Category: {cat} | Owner: {owner} | Tags: {tags or '-'} | Updated: {upd_str}")
+            st.write(f"Category: {cat} | Owner: {owner} | Tags: {tags} | Updated: {upd_str}")
             note = row.get("notes","")
             if note:
                 st.markdown(f"> {note}")
