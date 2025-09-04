@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 import streamlit as st, pandas as pd, gspread
 from google.oauth2.service_account import Credentials
+from datetime import datetime, timezone
+import re
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
@@ -29,6 +31,11 @@ def load_df(sheet_name: str) -> pd.DataFrame:
 
 def split_tags(s: str):
     return [t.strip() for t in str(s).split(";") if t.strip()]
+def hl(text: str, q: str) -> str:
+    if not q:
+        return str(text or "")
+    return re.sub(re.escape(q), lambda m: f"<mark>{m.group(0)}</mark>", str(text or ""), flags=re.I)
+
 
 st.set_page_config(page_title="Hospital Accreditation Hub", layout="wide")
 st.title("Hospital Accreditation Hub")
@@ -42,6 +49,28 @@ SHEET_NAME = cfg.get("sheet_name")
 if not SHEET_NAME:
     st.error("Missing [app].sheet_name in Secrets.")
     st.stop()
+
+# 1) Load the sheet
+try:
+    df = load_df(SHEET_NAME)
+except Exception as e:
+    st.error(f"Failed to load sheet: {e}")
+    st.stop()
+
+# 2) Last refresh + manual refresh button
+loaded_at = datetime.now(timezone.utc)
+st.caption(f"Last refresh: {loaded_at.strftime('%Y-%m-%d %H:%M UTC')}")
+if st.button("?? Refresh now"):
+    st.cache_data.clear()
+    st.rerun()
+
+# 3) Required columns guard (runs only after df exists)
+required_cols = ["title", "drive_link"]
+missing = [c for c in required_cols if c not in df.columns]
+if missing:
+    st.error(f"Sheet is missing required columns: {', '.join(missing)}")
+    st.stop()
+
 
 try:
     df = load_df(SHEET_NAME)
@@ -81,6 +110,13 @@ if len(view) > 0:
         view = view.sort_values("updated_at", ascending=False)
     else:
         view = view.sort_values("title", ascending=True, na_position="last")
+st.download_button(
+    "?? Download CSV",
+    data=view.to_csv(index=False).encode("utf-8-sig"),
+    file_name="hospital_hub.csv",
+    mime="text/csv",
+    use_container_width=True
+)
 
 st.subheader(f"Items ({len(view)})")
 if len(view) == 0:
@@ -94,11 +130,11 @@ else:
             tags = " / ".join(split_tags(row.get("tags",""))) or "-"
             upd = row.get("updated_at")
             upd_str = upd.strftime("%Y-%m-%d") if isinstance(upd, pd.Timestamp) else "-"
-            st.markdown(f"### {title}")
+            st.markdown(f"### {hl(title, q)}", unsafe_allow_html=True)
             st.write(f"Category: {cat} | Owner: {owner} | Tags: {tags} | Updated: {upd_str}")
             note = row.get("notes","")
             if note:
-                st.markdown(f"> {note}")
+                st.markdown("> " + hl(note, q), unsafe_allow_html=True)
             link = row.get("drive_link","")
             if link:
                 st.link_button("Open in Drive", link, use_container_width=True)
