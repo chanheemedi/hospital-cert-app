@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import urllib.parse as up
 import streamlit as st, pandas as pd, gspread
 from google.oauth2.service_account import Credentials
 from datetime import datetime, timezone
@@ -31,62 +32,106 @@ def load_df(sheet_name: str) -> pd.DataFrame:
 
 def split_tags(s: str):
     return [t.strip() for t in str(s).split(";") if t.strip()]
+
+# ¡å¡å¡å HIGHLIGHT FUNCTION (used to highlight search hits) ¡å¡å¡å
 def hl(text: str, q: str) -> str:
     if not q:
         return str(text or "")
     return re.sub(re.escape(q), lambda m: f"<mark>{m.group(0)}</mark>", str(text or ""), flags=re.I)
+# ¡ã¡ã¡ã HIGHLIGHT FUNCTION ¡ã¡ã¡ã
 
+def _sheet_id(s: str) -> str:
+    """Accept full URL or ID; return the spreadsheet ID (or the original if it's a name)."""
+    s = str(s).strip()
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", s)
+    if m:
+        return m.group(1)
+    q = up.urlparse(s).query
+    if q:
+        qs = dict(up.parse_qsl(q))
+        if "id" in qs:
+            return qs["id"]
+    return s
 
+@st.cache_data(ttl=60)
+def load_many(ids_or_names) -> pd.DataFrame:
+    gc = get_client()
+    frames = []
+    for ident in ids_or_names:
+        key = _sheet_id(ident)
+        try:
+            sh = gc.open_by_key(key)
+        except Exception:
+            sh = gc.open(ident)  # allow opening by name too
+        ws = sh.sheet1
+        df = pd.DataFrame(ws.get_all_records())
+        df["__source"] = key
+        if "updated_at" in df.columns:
+            df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
+        if "tags" in df.columns:
+            df["tags"] = df["tags"].fillna("").astype(str)
+        frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+# ---------------- UI ----------------
 st.set_page_config(page_title="Hospital Accreditation Hub", layout="wide")
 st.title("Hospital Accreditation Hub")
 PUBLIC_URL = "https://hospital-cert-app-enwsxvnq6npmufwy3ysccf.streamlit.app/"
 st.link_button("Open this app (public URL)", PUBLIC_URL, type="secondary")
-
 st.caption("Google Sheets + Google Drive + Streamlit")
 
+# Read config from secrets
 cfg = st.secrets.get("app", {})
+SHEET_IDS = cfg.get("sheet_ids", [])
 SHEET_NAME = cfg.get("sheet_name")
-if not SHEET_NAME:
-    st.error("Missing [app].sheet_name in Secrets.")
-    st.stop()
 
-# 1) Load the sheet
+# Load data (prefer multiple sheets if provided)
 try:
-    df = load_df(SHEET_NAME)
+    if SHEET_IDS:
+        df = load_many(SHEET_IDS)
+    elif SHEET_NAME:
+        df = load_df(SHEET_NAME)
+    else:
+        st.error("Secrets is missing [app].sheet_ids or [app].sheet_name.")
+        st.stop()
 except Exception as e:
-    st.error(f"Failed to load sheet: {e}")
+    st.error(f"Failed to load sheet(s): {e}")
     st.stop()
 
-# 2) Last refresh + manual refresh button
+# Last refresh + manual refresh
 loaded_at = datetime.now(timezone.utc)
 st.caption(f"Last refresh: {loaded_at.strftime('%Y-%m-%d %H:%M UTC')}")
-if st.button("?? Refresh now"):
+if st.button("Refresh now"):
     st.cache_data.clear()
     st.rerun()
 
-# 3) Required columns guard (runs only after df exists)
+# Required columns guard
 required_cols = ["title", "drive_link"]
 missing = [c for c in required_cols if c not in df.columns]
 if missing:
     st.error(f"Sheet is missing required columns: {', '.join(missing)}")
     st.stop()
 
-
-try:
-    df = load_df(SHEET_NAME)
-except Exception as e:
-    st.error(f"Failed to load sheet: {e}")
-    st.stop()
-
+# Sidebar filters
 with st.sidebar:
     st.subheader("Search / Filter")
     q = st.text_input("Keyword (title/tags/notes)", "")
+
     cats = sorted([c for c in df.get("category", []).unique() if isinstance(c, str)]) if "category" in df.columns else []
-    sel_cat = st.multiselect("Category", cats, default=[])
+    sel_cat = st.multiselect("Category", cats, default=[]) if cats else []
+
     all_tags = sorted({t for ts in df.get("tags", []).tolist() for t in split_tags(ts)}) if "tags" in df.columns else []
-    sel_tag = st.multiselect("Tags", all_tags, default=[])
+    sel_tag = st.multiselect("Tags", all_tags, default=[]) if all_tags else []
+
+    if "__source" in df.columns:
+        sources = sorted(df["__source"].dropna().unique().tolist())
+        sel_src = st.multiselect("Source sheet", sources, default=[])
+    else:
+        sel_src = []
+
     sort_by = st.selectbox("Sort", ["updated_at desc", "title asc"]) if len(df) > 0 else "title asc"
 
+# Apply filters
 view = df.copy()
 if q:
     ql = q.lower()
@@ -100,24 +145,33 @@ if q:
         ]
         return any(ql in f.lower() for f in fields)
     view = view[view.apply(hit, axis=1)]
+
 if sel_cat and "category" in view.columns:
     view = view[view["category"].isin(sel_cat)]
+
 if sel_tag and "tags" in view.columns:
     view = view[view["tags"].apply(lambda s: any(t in split_tags(s) for t in sel_tag))]
 
+if sel_src and "__source" in view.columns:
+    view = view[view["__source"].isin(sel_src)]
+
+# Sort
 if len(view) > 0:
     if sort_by == "updated_at desc" and "updated_at" in view.columns:
         view = view.sort_values("updated_at", ascending=False)
     else:
         view = view.sort_values("title", ascending=True, na_position="last")
+
+# Export
 st.download_button(
-    "?? Download CSV",
+    "Download CSV",
     data=view.to_csv(index=False).encode("utf-8-sig"),
     file_name="hospital_hub.csv",
     mime="text/csv",
     use_container_width=True
 )
 
+# Results
 st.subheader(f"Items ({len(view)})")
 if len(view) == 0:
     st.warning("No items. Adjust filters.")
