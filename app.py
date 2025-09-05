@@ -19,9 +19,9 @@ def get_client():
 def load_df(sheet_name: str) -> pd.DataFrame:
     gc = get_client()
     try:
-        sh = gc.open(sheet_name)        # open by name
+        sh = gc.open(sheet_name)
     except Exception:
-        sh = gc.open_by_key(sheet_name) # fallback: open by ID
+        sh = gc.open_by_key(sheet_name)
     ws = sh.sheet1
     df = pd.DataFrame(ws.get_all_records())
     if "updated_at" in df.columns:
@@ -33,15 +33,13 @@ def load_df(sheet_name: str) -> pd.DataFrame:
 def split_tags(s: str):
     return [t.strip() for t in str(s).split(";") if t.strip()]
 
-# ¡å¡å¡å HIGHLIGHT FUNCTION (used to highlight search hits) ¡å¡å¡å
+# highlight helper
 def hl(text: str, q: str) -> str:
     if not q:
         return str(text or "")
     return re.sub(re.escape(q), lambda m: f"<mark>{m.group(0)}</mark>", str(text or ""), flags=re.I)
-# ¡ã¡ã¡ã HIGHLIGHT FUNCTION ¡ã¡ã¡ã
 
 def _sheet_id(s: str) -> str:
-    """Accept full URL or ID; return the spreadsheet ID (or the original if it's a name)."""
     s = str(s).strip()
     m = re.search(r"/d/([A-Za-z0-9_-]+)", s)
     if m:
@@ -62,7 +60,7 @@ def load_many(ids_or_names) -> pd.DataFrame:
         try:
             sh = gc.open_by_key(key)
         except Exception:
-            sh = gc.open(ident)  # allow opening by name too
+            sh = gc.open(ident)
         ws = sh.sheet1
         df = pd.DataFrame(ws.get_all_records())
         df["__source"] = key
@@ -73,19 +71,17 @@ def load_many(ids_or_names) -> pd.DataFrame:
         frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-# ---------------- UI ----------------
+# UI
 st.set_page_config(page_title="Hospital Accreditation Hub", layout="wide")
 st.title("Hospital Accreditation Hub")
 PUBLIC_URL = "https://hospital-cert-app-enwsxvnq6npmufwy3ysccf.streamlit.app/"
 st.link_button("Open this app (public URL)", PUBLIC_URL, type="secondary")
 st.caption("Google Sheets + Google Drive + Streamlit")
 
-# Read config from secrets
 cfg = st.secrets.get("app", {})
 SHEET_IDS = cfg.get("sheet_ids", [])
 SHEET_NAME = cfg.get("sheet_name")
 
-# Load data (prefer multiple sheets if provided)
 try:
     if SHEET_IDS:
         df = load_many(SHEET_IDS)
@@ -98,21 +94,18 @@ except Exception as e:
     st.error(f"Failed to load sheet(s): {e}")
     st.stop()
 
-# Last refresh + manual refresh
 loaded_at = datetime.now(timezone.utc)
 st.caption(f"Last refresh: {loaded_at.strftime('%Y-%m-%d %H:%M UTC')}")
 if st.button("Refresh now"):
     st.cache_data.clear()
     st.rerun()
 
-# Required columns guard
 required_cols = ["title", "drive_link"]
 missing = [c for c in required_cols if c not in df.columns]
 if missing:
     st.error(f"Sheet is missing required columns: {', '.join(missing)}")
     st.stop()
 
-# Sidebar filters
 with st.sidebar:
     st.subheader("Search / Filter")
     q = st.text_input("Keyword (title/tags/notes)", "")
@@ -131,7 +124,6 @@ with st.sidebar:
 
     sort_by = st.selectbox("Sort", ["updated_at desc", "title asc"]) if len(df) > 0 else "title asc"
 
-# Apply filters
 view = df.copy()
 if q:
     ql = q.lower()
@@ -155,14 +147,12 @@ if sel_tag and "tags" in view.columns:
 if sel_src and "__source" in view.columns:
     view = view[view["__source"].isin(sel_src)]
 
-# Sort
 if len(view) > 0:
     if sort_by == "updated_at desc" and "updated_at" in view.columns:
         view = view.sort_values("updated_at", ascending=False)
     else:
         view = view.sort_values("title", ascending=True, na_position="last")
 
-# Export
 st.download_button(
     "Download CSV",
     data=view.to_csv(index=False).encode("utf-8-sig"),
@@ -171,7 +161,6 @@ st.download_button(
     use_container_width=True
 )
 
-# Results
 st.subheader(f"Items ({len(view)})")
 if len(view) == 0:
     st.warning("No items. Adjust filters.")
