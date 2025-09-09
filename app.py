@@ -19,6 +19,15 @@ def get_client():
     )
     return gspread.authorize(creds)
 
+# ---------------- Friendly names for sheet IDs (edit labels as you like) ----------------
+SHEET_NAME_MAP = {
+    "1a8hov55dVo4X4wJGMrdjVjIVYaUr8zLKDQSZ68QP-JU": "Core Policies",
+    "1Z192qqZpw498AnN6LRAjYjy2_1wOkoXHDSUU2Xiejo8": "Quality Metrics",
+    "1gThht-uDroRnnyQwuu1hRwc1OEEvlkCslp_bCNA5gSw": "Infection Control",
+    "1XHpnubxzplhXHgXTSyATDi5QTu7gAdJZt-SC-U3Y9bg": "Patient Safety",
+    "1S75wiOMH1iY-30123r2rcl3Req29Rr_bwRM6xXOUmfU": "Checklists",
+}
+
 # ---------------- helpers ----------------
 def safe_str(x: object, default: str = "") -> str:
     """Return a clean string; treat None/NaN/'nan' as empty."""
@@ -73,11 +82,11 @@ def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = ""
 
     # Coerce strings
-    df["title"]      = df["title"].apply(safe_str)
-    df["category"]   = df["category"].apply(safe_str)
-    df["owner"]      = df["owner"].apply(safe_str)
-    df["notes"]      = df["notes"].apply(safe_str)
-    df["tags"]       = df["tags"].apply(safe_str)
+    df["title"]    = df["title"].apply(safe_str)
+    df["category"] = df["category"].apply(safe_str)
+    df["owner"]    = df["owner"].apply(safe_str)
+    df["notes"]    = df["notes"].apply(safe_str)
+    df["tags"]     = df["tags"].apply(safe_str)
 
     # Normalize tags back to single string for table; card will split for display
     df["tags"] = df["tags"].apply(lambda s: ";".join(split_tags(s)))
@@ -166,6 +175,10 @@ if missing:
     st.error(f"Sheet is missing required columns: {', '.join(missing)}")
     st.stop()
 
+# map source IDs to friendly names (if present)
+if "__source" in df.columns:
+    df["__source_name"] = df["__source"].map(SHEET_NAME_MAP).fillna(df["__source"])
+
 # ---------------- sidebar filters ----------------
 with st.sidebar:
     st.subheader("Search / Filter")
@@ -177,8 +190,8 @@ with st.sidebar:
     all_tags = sorted({t for ts in df.get("tags", []).tolist() for t in split_tags(ts)}) if "tags" in df.columns else []
     sel_tag = st.multiselect("Tags", all_tags, default=[]) if all_tags else []
 
-    if "__source" in df.columns:
-        sources = sorted(df["__source"].dropna().unique().tolist())
+    if "__source_name" in df.columns:
+        sources = sorted(df["__source_name"].dropna().unique().tolist())
         sel_src = st.multiselect("Source sheet", sources, default=[])
     else:
         sel_src = []
@@ -207,8 +220,8 @@ if sel_cat and "category" in view.columns:
 if sel_tag and "tags" in view.columns:
     view = view[view["tags"].apply(lambda s: any(t in split_tags(s) for t in sel_tag))]
 
-if sel_src and "__source" in view.columns:
-    view = view[view["__source"].isin(sel_src)]
+if sel_src and "__source_name" in view.columns:
+    view = view[view["__source_name"].isin(sel_src)]
 
 # sort
 if len(view) > 0:
@@ -226,6 +239,23 @@ st.download_button(
     use_container_width=True
 )
 
+# ---------------- debug (optional) ----------------
+with st.expander("Debug: sources loaded", expanded=False):
+    st.write("SHEET_IDS from secrets:", SHEET_IDS)
+    st.write("Total rows after merge:", len(df))
+    if "__source" in df.columns and len(df) > 0:
+        counts = df["__source"].value_counts(dropna=False)
+        st.dataframe(
+            counts.rename_axis("source_id").reset_index(name="rows"),
+            use_container_width=True,
+        )
+        if "__source_name" in df.columns:
+            counts2 = df["__source_name"].value_counts(dropna=False)
+            st.dataframe(
+                counts2.rename_axis("source_name").reset_index(name="rows"),
+                use_container_width=True,
+            )
+
 # ---------------- results ----------------
 st.subheader(f"Items ({len(view)})")
 if len(view) == 0:
@@ -242,7 +272,12 @@ else:
             upd_str = upd.strftime("%Y-%m-%d") if isinstance(upd, pd.Timestamp) else "-"
 
             st.markdown(f"### {title}", unsafe_allow_html=True)
-            st.write(f"Category: {cat} | Owner: {owner} | Tags: {tags_str} | Updated: {upd_str}")
+            meta = f"Category: {cat} | Owner: {owner} | Tags: {tags_str} | Updated: {upd_str}"
+            if "__source_name" in row:
+                src_name = safe_str(row.get("__source_name", ""))
+                if src_name:
+                    meta += f" | Source: {src_name}"
+            st.write(meta)
 
             note = safe_str(row.get("notes",""))
             if note:
