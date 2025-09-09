@@ -20,21 +20,30 @@ def get_client():
     return gspread.authorize(creds)
 
 # ---------------- helpers ----------------
+def safe_str(x: object, default: str = "") -> str:
+    """Return a clean string; treat None/NaN/'nan' as empty."""
+    try:
+        if x is None or (hasattr(pd, "isna") and pd.isna(x)):
+            return default
+    except Exception:
+        pass
+    s = str(x).strip()
+    return default if s.lower() == "nan" else s
+
 def split_tags(s: str):
-    return [t.strip() for t in str(s).split(";") if t.strip()]
+    return [t.strip() for t in safe_str(s).split(";") if t.strip()]
 
 def hl(text: str, q: str) -> str:
+    s = safe_str(text)
     if not q:
-        return str(text or "")
-    return re.sub(re.escape(q), lambda m: f"<mark>{m.group(0)}</mark>", str(text or ""), flags=re.I)
+        return s
+    return re.sub(re.escape(q), lambda m: f"<mark>{m.group(0)}</mark>", s, flags=re.I)
 
 def norm_link(x) -> str:
     """Return clean http(s) URL or '' if invalid/empty."""
-    if x is None:
+    s = safe_str(x)
+    if not s:
         return ""
-    if isinstance(x, float) and math.isnan(x):
-        return ""
-    s = str(x).strip()
     try:
         p = urlparse(s)
         return s if p.scheme in ("http", "https") and bool(p.netloc) else ""
@@ -43,7 +52,7 @@ def norm_link(x) -> str:
 
 def _sheet_id(s: str) -> str:
     """Accept full URL or ID; return spreadsheet ID (or original if name)."""
-    s = str(s).strip()
+    s = safe_str(s)
     m = re.search(r"/d/([A-Za-z0-9_-]+)", s)
     if m:
         return m.group(1)
@@ -54,6 +63,38 @@ def _sheet_id(s: str) -> str:
             return qs["id"]
     return s
 
+def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Make columns consistent, remove blank rows, and coerce types safely."""
+    df = df.copy()
+
+    # Ensure expected columns exist
+    for col in ["title", "category", "tags", "owner", "notes", "drive_link"]:
+        if col not in df.columns:
+            df[col] = ""
+
+    # Coerce strings
+    df["title"]      = df["title"].apply(safe_str)
+    df["category"]   = df["category"].apply(safe_str)
+    df["owner"]      = df["owner"].apply(safe_str)
+    df["notes"]      = df["notes"].apply(safe_str)
+    df["tags"]       = df["tags"].apply(safe_str)
+
+    # Normalize tags back to single string for table; card will split for display
+    df["tags"] = df["tags"].apply(lambda s: ";".join(split_tags(s)))
+
+    # Drive link normalization
+    df["drive_link"] = df["drive_link"].apply(norm_link)
+
+    # Dates
+    if "updated_at" in df.columns:
+        df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
+
+    # Drop rows that are completely non-useful (title, link AND notes empty)
+    mask_empty = (df["title"] == "") & (df["drive_link"] == "") & (df["notes"] == "")
+    df = df[~mask_empty].reset_index(drop=True)
+
+    return df
+
 # ---------------- data loaders ----------------
 @st.cache_data(ttl=60)
 def load_df(single: str) -> pd.DataFrame:
@@ -63,14 +104,9 @@ def load_df(single: str) -> pd.DataFrame:
     except Exception:
         sh = gc.open_by_key(single)      # by ID
     ws = sh.sheet1
-    df = pd.DataFrame(ws.get_all_records())
-    # normalize columns
-    if "updated_at" in df.columns:
-        df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
-    if "tags" in df.columns:
-        df["tags"] = df["tags"].fillna("").astype(str)
-    if "drive_link" in df.columns:
-        df["drive_link"] = df["drive_link"].apply(norm_link).astype(str)
+    raw = ws.get_all_records()
+    df = pd.DataFrame(raw)
+    df = normalize_df(df)
     return df
 
 @st.cache_data(ttl=60)
@@ -84,15 +120,10 @@ def load_many(ids_or_names) -> pd.DataFrame:
         except Exception:
             sh = gc.open(ident)  # allow names too
         ws = sh.sheet1
-        df = pd.DataFrame(ws.get_all_records())
-        # normalize columns
+        raw = ws.get_all_records()
+        df = pd.DataFrame(raw)
         df["__source"] = key
-        if "updated_at" in df.columns:
-            df["updated_at"] = pd.to_datetime(df["updated_at"], errors="coerce")
-        if "tags" in df.columns:
-            df["tags"] = df["tags"].fillna("").astype(str)
-        if "drive_link" in df.columns:
-            df["drive_link"] = df["drive_link"].apply(norm_link).astype(str)
+        df = normalize_df(df)
         frames.append(df)
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
@@ -161,11 +192,11 @@ if q:
     ql = q.lower()
     def hit(row):
         fields = [
-            str(row.get("title","")),
-            str(row.get("tags","")),
-            str(row.get("notes","")),
-            str(row.get("owner","")),
-            str(row.get("category","")),
+            safe_str(row.get("title","")),
+            safe_str(row.get("tags","")),
+            safe_str(row.get("notes","")),
+            safe_str(row.get("owner","")),
+            safe_str(row.get("category","")),
         ]
         return any(ql in f.lower() for f in fields)
     view = view[view.apply(hit, axis=1)]
@@ -202,17 +233,18 @@ if len(view) == 0:
 else:
     for _, row in view.iterrows():
         with st.container(border=True):
-            title = row.get("title", "(no title)")
-            cat = row.get("category", "-")
-            owner = row.get("owner", "-")
+            raw_title = row.get("title", "")
+            title = hl(raw_title, q)
+            cat = safe_str(row.get("category", "-")) or "-"
+            owner = safe_str(row.get("owner", "-")) or "-"
             tags_str = " / ".join(split_tags(row.get("tags",""))) or "-"
             upd = row.get("updated_at")
             upd_str = upd.strftime("%Y-%m-%d") if isinstance(upd, pd.Timestamp) else "-"
 
-            st.markdown(f"### {hl(title, q)}", unsafe_allow_html=True)
+            st.markdown(f"### {title}", unsafe_allow_html=True)
             st.write(f"Category: {cat} | Owner: {owner} | Tags: {tags_str} | Updated: {upd_str}")
 
-            note = row.get("notes","")
+            note = safe_str(row.get("notes",""))
             if note:
                 st.markdown("> " + hl(note, q), unsafe_allow_html=True)
 
